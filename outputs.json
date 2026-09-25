@@ -1,0 +1,6 @@
+{
+  "ApplyfyAwsBackendStack": {
+    "HelloApiEndpoint91438085": "https://bz3c5dnkce.execute-api.us-east-1.amazonaws.com/prod/",
+    "HelloUrl": "https://bz3c5dnkce.execute-api.us-east-1.amazonaws.com/prod/hello"
+  }
+}

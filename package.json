@@ -12,13 +12,18 @@
     "@swc/jest": "^0.2.39",
     "@types/jest": "^30",
     "@types/node": "^24.10.1",
-    "jest": "^30",
     "aws-cdk": "2.1143.0",
+    "jest": "^30",
     "tsx": "^4.23.0",
     "typescript": "~7.0.2"
   },
   "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1141.0",
+    "@aws-sdk/client-s3": "^3.1141.0",
+    "@aws-sdk/s3-request-presigner": "^3.1141.0",
     "aws-cdk-lib": "^2.270.0",
-    "constructs": "^10.5.0"
+    "constructs": "^10.5.0",
+    "mammoth": "^1.12.3",
+    "unpdf": "^1.8.1"
   }
 }

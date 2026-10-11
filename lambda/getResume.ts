@@ -13,6 +13,9 @@ const CORS_HEADERS = {
 interface ApiGatewayEvent {
   pathParameters?: Record<string, string | undefined> | null;
   httpMethod?: string;
+  requestContext?: {
+    authorizer?: Record<string, string | undefined> | null;
+  };
 }
 
 function jsonResponse(statusCode: number, body: Record<string, unknown>) {
@@ -60,7 +63,21 @@ export const handler = async (event: ApiGatewayEvent) => {
     );
 
     const item = result.Item;
-    if (!item) {
+    const callerId = event.requestContext?.authorizer?.userId?.trim();
+    const ownerId = item?.ownerId?.S;
+    // TTL deletion can lag by hours, so treat already-expired items as missing
+    const expiresAt = Number(item?.expiresAt?.N);
+    const isExpired =
+      Number.isFinite(expiresAt) && expiresAt <= Math.floor(Date.now() / 1000);
+    // Not-owned and not-yet-parsed look identical to missing, so ids can't be probed
+    if (
+      !item ||
+      isExpired ||
+      !callerId ||
+      !ownerId ||
+      ownerId !== callerId ||
+      item.status?.S === 'PENDING'
+    ) {
       return jsonResponse(404, { error: 'Resume not found', resumeId });
     }
 

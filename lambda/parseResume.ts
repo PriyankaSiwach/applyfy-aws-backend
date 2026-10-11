@@ -1,4 +1,4 @@
-import { DynamoDBClient, PutItemCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { cleanResumeToPlainText } from './resumeText';
 
@@ -6,6 +6,7 @@ const s3 = new S3Client({});
 const dynamodb = new DynamoDBClient({});
 
 const RESUMES_TABLE_NAME = process.env.RESUMES_TABLE_NAME;
+const RESUME_TTL_SECONDS = 24 * 60 * 60;
 
 interface S3EventRecord {
   eventName: string;
@@ -81,16 +82,34 @@ async function saveResumeItem(params: {
     throw new Error('RESUMES_TABLE_NAME environment variable is not set');
   }
 
+  // UpdateItem (not PutItem) so the ownerId written by getUploadUrl is preserved
   await dynamodb.send(
-    new PutItemCommand({
+    new UpdateItemCommand({
       TableName: RESUMES_TABLE_NAME,
-      Item: {
-        resumeId: { S: params.resumeId },
-        extractedText: { S: params.extractedText },
-        uploadedAt: { S: params.uploadedAt },
-        filename: { S: params.filename },
-        fileSize: { N: String(params.fileSize) },
-        charLength: { N: String(params.charLength) },
+      Key: { resumeId: { S: params.resumeId } },
+      UpdateExpression:
+        'SET #extractedText = :extractedText, #filename = :filename, #fileSize = :fileSize, ' +
+        '#charLength = :charLength, #uploadedAt = :uploadedAt, #status = :status, #expiresAt = :expiresAt',
+      ExpressionAttributeNames: {
+        '#extractedText': 'extractedText',
+        '#filename': 'filename',
+        '#fileSize': 'fileSize',
+        '#charLength': 'charLength',
+        '#uploadedAt': 'uploadedAt',
+        '#status': 'status',
+        '#expiresAt': 'expiresAt',
+      },
+      ExpressionAttributeValues: {
+        ':extractedText': { S: params.extractedText },
+        ':filename': { S: params.filename },
+        ':fileSize': { N: String(params.fileSize) },
+        ':charLength': { N: String(params.charLength) },
+        ':uploadedAt': { S: params.uploadedAt },
+        ':status': { S: 'PARSED' },
+        // DynamoDB TTL requires epoch seconds, not milliseconds
+        ':expiresAt': {
+          N: String(Math.floor(Date.now() / 1000) + RESUME_TTL_SECONDS),
+        },
       },
     }),
   );

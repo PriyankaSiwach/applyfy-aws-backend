@@ -77,6 +77,14 @@ export class ApplyfyAwsBackendStack extends cdk.Stack {
       encryption: s3.BucketEncryption.S3_MANAGED,
       enforceSSL: true,
       versioned: true,
+      lifecycleRules: [
+        {
+          id: 'ExpireResumesAfterOneDay',
+          expiration: cdk.Duration.days(1),
+          noncurrentVersionExpiration: cdk.Duration.days(1),
+          abortIncompleteMultipartUploadAfter: cdk.Duration.days(1),
+        },
+      ],
       cors: [
         {
           allowedMethods: [
@@ -100,6 +108,7 @@ export class ApplyfyAwsBackendStack extends cdk.Stack {
     const resumesTable = new dynamodb.Table(this, 'ResumesTable', {
       partitionKey: { name: 'resumeId', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: 'expiresAt',
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
@@ -169,10 +178,12 @@ export class ApplyfyAwsBackendStack extends cdk.Stack {
       runtime: lambda.Runtime.NODEJS_24_X,
       environment: {
         RESUME_BUCKET_NAME: resumeBucket.bucketName,
+        RESUMES_TABLE_NAME: resumesTable.tableName,
       },
     });
 
     resumeBucket.grantPut(getUploadUrlFn);
+    resumesTable.grant(getUploadUrlFn, 'dynamodb:PutItem');
 
     const uploadUrl = api.root.addResource('upload-url', {
       defaultCorsPreflightOptions: {

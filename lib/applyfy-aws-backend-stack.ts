@@ -33,6 +33,9 @@ export class ApplyfyAwsBackendStack extends cdk.Stack {
       cloudWatchRoleRemovalPolicy: cdk.RemovalPolicy.DESTROY,
       deployOptions: {
         stageName: 'prod',
+        // Stage-wide throttle (all methods, all clients); basic protection when WAF is off
+        throttlingRateLimit: 10,
+        throttlingBurstLimit: 20,
         loggingLevel: apigateway.MethodLoggingLevel.INFO,
         dataTraceEnabled: true,
         metricsEnabled: true,
@@ -228,6 +231,13 @@ export class ApplyfyAwsBackendStack extends cdk.Stack {
       value: `${api.url}resume/{id}`,
       description: 'URL for the GET /resume/{id} endpoint (id = URL-encoded S3 key)',
     });
+
+    // WAF (web ACL, association, log group, log policy) is opt-in: cdk deploy -c enableWaf=true.
+    // Everything below is WAF-only, so it must stay last in the constructor.
+    const enableWaf = this.node.tryGetContext('enableWaf') === 'true';
+    if (!enableWaf) {
+      return;
+    }
 
     // Per-IP throttles, each with its own counter: GET /upload-url (10 requests / rolling
     // 1-minute window) and GET /resume/{id} (100 requests / rolling 1-minute window)

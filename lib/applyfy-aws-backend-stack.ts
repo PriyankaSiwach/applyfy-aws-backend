@@ -130,6 +130,39 @@ export class ApplyfyAwsBackendStack extends cdk.Stack {
       new s3n.LambdaDestination(parseResumeFn),
     );
 
+    const clerkIssuer = process.env.CLERK_ISSUER ?? 'https://clerk.applyfy.net';
+
+    const authorizerFn = new NodejsFunction(this, 'ClerkAuthorizerFunction', {
+      entry: 'lambda/authorizer.ts',
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_24_X,
+      environment: {
+        CLERK_ISSUER: clerkIssuer,
+      },
+    });
+
+    const clerkAuthorizer = new apigateway.TokenAuthorizer(this, 'ClerkTokenAuthorizer', {
+      handler: authorizerFn,
+      identitySource: apigateway.IdentitySource.header('Authorization'),
+      resultsCacheTtl: cdk.Duration.seconds(300),
+    });
+
+    // Gateway-generated 401/403s skip the Lambda, so they need CORS headers here or browsers hide them
+    api.addGatewayResponse('UnauthorizedResponse', {
+      type: apigateway.ResponseType.UNAUTHORIZED,
+      responseHeaders: {
+        'Access-Control-Allow-Origin': "'*'",
+        'Access-Control-Allow-Headers': "'*'",
+      },
+    });
+    api.addGatewayResponse('AccessDeniedResponse', {
+      type: apigateway.ResponseType.ACCESS_DENIED,
+      responseHeaders: {
+        'Access-Control-Allow-Origin': "'*'",
+        'Access-Control-Allow-Headers': "'*'",
+      },
+    });
+
     const getUploadUrlFn = new NodejsFunction(this, 'GetUploadUrlFunction', {
       entry: 'lambda/getUploadUrl.ts',
       handler: 'handler',
@@ -148,14 +181,45 @@ export class ApplyfyAwsBackendStack extends cdk.Stack {
         allowHeaders: apigateway.Cors.DEFAULT_HEADERS,
       },
     });
-    uploadUrl.addMethod('GET', new apigateway.LambdaIntegration(getUploadUrlFn));
+    uploadUrl.addMethod('GET', new apigateway.LambdaIntegration(getUploadUrlFn), {
+      authorizer: clerkAuthorizer,
+    });
 
     new cdk.CfnOutput(this, 'UploadUrlEndpoint', {
       value: `${api.url}upload-url`,
       description: 'URL for the GET /upload-url endpoint (pass ?filename=...)',
     });
 
-    // Per-IP throttle for GET /upload-url only (10 requests / rolling 1-minute window)
+    const getResumeFn = new NodejsFunction(this, 'GetResumeFunction', {
+      entry: 'lambda/getResume.ts',
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_24_X,
+      environment: {
+        RESUMES_TABLE_NAME: resumesTable.tableName,
+      },
+    });
+
+    resumesTable.grantReadData(getResumeFn);
+
+    const resumeResource = api.root.addResource('resume');
+    const resumeById = resumeResource.addResource('{id}', {
+      defaultCorsPreflightOptions: {
+        allowOrigins: apigateway.Cors.ALL_ORIGINS,
+        allowMethods: ['GET', 'OPTIONS'],
+        allowHeaders: apigateway.Cors.DEFAULT_HEADERS,
+      },
+    });
+    resumeById.addMethod('GET', new apigateway.LambdaIntegration(getResumeFn), {
+      authorizer: clerkAuthorizer,
+    });
+
+    new cdk.CfnOutput(this, 'GetResumeEndpoint', {
+      value: `${api.url}resume/{id}`,
+      description: 'URL for the GET /resume/{id} endpoint (id = URL-encoded S3 key)',
+    });
+
+    // Per-IP throttles, each with its own counter: GET /upload-url (10 requests / rolling
+    // 1-minute window) and GET /resume/{id} (100 requests / rolling 1-minute window)
     const uploadUrlWebAcl = new wafv2.CfnWebACL(this, 'UploadUrlWebAcl', {
       name: 'ApplyfyUploadUrlRateLimit',
       scope: 'REGIONAL',
@@ -170,6 +234,12 @@ export class ApplyfyAwsBackendStack extends cdk.Stack {
           contentType: 'APPLICATION_JSON',
           content: JSON.stringify({
             error: 'Too many requests. Limit is 10 requests per minute per IP.',
+          }),
+        },
+        ResumeTooManyRequests: {
+          contentType: 'APPLICATION_JSON',
+          content: JSON.stringify({
+            error: 'Too many requests. Limit is 100 requests per minute per IP.',
           }),
         },
       },
@@ -204,6 +274,43 @@ export class ApplyfyAwsBackendStack extends cdk.Stack {
                   fieldToMatch: { uriPath: {} },
                   positionalConstraint: 'CONTAINS',
                   searchString: 'upload-url',
+                  textTransformations: [{ priority: 0, type: 'LOWERCASE' }],
+                },
+              },
+            },
+          },
+        },
+        // GET /resume/{id}: higher limit (100/min) because the client polls until parsing finishes
+        {
+          name: 'ResumeRateLimitPerIP',
+          priority: 1,
+          action: {
+            block: {
+              customResponse: {
+                responseCode: 429,
+                customResponseBodyKey: 'ResumeTooManyRequests',
+                responseHeaders: [
+                  { name: 'Access-Control-Allow-Origin', value: '*' },
+                  { name: 'Retry-After', value: '60' },
+                ],
+              },
+            },
+          },
+          visibilityConfig: {
+            cloudWatchMetricsEnabled: true,
+            metricName: 'ResumeRateLimitPerIP',
+            sampledRequestsEnabled: true,
+          },
+          statement: {
+            rateBasedStatement: {
+              limit: 100,
+              evaluationWindowSec: 60,
+              aggregateKeyType: 'IP',
+              scopeDownStatement: {
+                byteMatchStatement: {
+                  fieldToMatch: { uriPath: {} },
+                  positionalConstraint: 'CONTAINS',
+                  searchString: '/resume/',
                   textTransformations: [{ priority: 0, type: 'LOWERCASE' }],
                 },
               },
